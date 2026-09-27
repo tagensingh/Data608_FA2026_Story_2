@@ -236,7 +236,7 @@ s3 <- ggplot(z |> filter(date >= ymd("2021-01-01")), aes(date, UNRATE)) + zshade
 
 {{< pagebreak >}}
 
-## 3 · Swtiching strategies  - Why ?
+## 3 · Switching strategies - Why?
 
 ```{r}
 #| label: fig-phillips
@@ -276,7 +276,7 @@ ggplot(ph, aes(UNRATE, infl)) +
 
 {{< pagebreak >}}
 
-## 4 · How close to the target ?
+## 4 · How close to the target?
 
 ```{r}
 #| label: fig-bullseye
