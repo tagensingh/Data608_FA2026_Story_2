@@ -1,0 +1,409 @@
+---
+title: "Chasing Two Targets: How the Fed Has Managed Its Dual Mandate, 1995–2026"
+subtitle: "DATA 608 · Story 2"
+author: "Tage Singh"
+date: today
+format:
+  typst:
+    toc: false
+    fig-width: 7.5
+    fig-height: 4.4
+    fig-format: png
+    fig-dpi: 200
+    margin:
+      x: 0.9in
+      y: 0.8in
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(patchwork)
+library(ggrepel)
+library(scales)
+
+# ---- Data: FRED downloads (BLS CPI-U & unemployment, Fed Board fed funds, CBO NROU) ----
+# Data is hosted publicly on GitHub so the report renders anywhere
+data_url <- "https://raw.githubusercontent.com/tagensingh/Data608_FA2026_Story_2/main/data/"
+raw <- read_csv(paste0(data_url, "fred_macro_monthly.csv"), show_col_types = FALSE) |>
+  mutate(date = ym(date))
+nrou <- read_csv(paste0(data_url, "fred_nrou_quarterly.csv"), show_col_types = FALSE) |>
+  mutate(date = ym(date))
+
+fait_start <- ymd("2020-09-01")   # FAIT announced 27 Aug 2020
+fait_end   <- ymd("2025-09-01")   # FAIT retired 22 Aug 2025
+
+macro <- raw |>
+  # Oct-2025 CPI and unemployment were never published (federal shutdown): interpolate
+  mutate(across(c(UNRATE, CPIAUCSL, CPILFESL), ~ zoo::na.approx(.x, na.rm = FALSE))) |>
+  mutate(
+    infl      = 100 * (CPIAUCSL / lag(CPIAUCSL, 12) - 1),   # inflation = 12-mo % change in CPI-U
+    core_infl = 100 * (CPILFESL / lag(CPILFESL, 12) - 1),
+    pce_core  = 100 * (PCEPILFE / lag(PCEPILFE, 12) - 1)
+  ) |>
+  left_join(nrou, by = "date") |>
+  mutate(
+    NROU   = zoo::na.approx(NROU, na.rm = FALSE, rule = 2),
+    u_gap  = UNRATE - NROU,          # + = more unemployment than 'maximum employment'
+    i_gap  = infl - 2,               # + = inflation above target
+    regime = case_when(
+      date <  fait_start ~ "Pre-FAIT",
+      date <  fait_end   ~ "FAIT",
+      TRUE               ~ "Post-FAIT"
+    ) |> factor(levels = c("Pre-FAIT", "FAIT", "Post-FAIT"))
+  ) |>
+  filter(date >= ymd("1995-01-01"))
+
+last_obs <- max(macro$date[!is.na(macro$infl)])
+
+# ---- Look & feel ----
+# Okabe-Ito (qualitative, colour-blind safe) - used ONLY where colour encodes the policy regime
+regime_cols <- c("Pre-FAIT" = "#0072B2", "FAIT" = "#E69F00", "Post-FAIT" = "#009E73")
+line_col <- "#333333"   # single-series lines: no colour encoding, so neutral ink
+ink   <- "#0b0b0b"; ink2 <- "#52514e"; muted <- "#8a8984"; grid_col <- "#e6e5e1"
+
+recessions <- tibble(
+  start = ymd(c("2001-03-01", "2007-12-01", "2020-02-01")),
+  end   = ymd(c("2001-11-01", "2009-06-01", "2020-04-01"))
+)
+
+theme_story <- function(base = 10.5) {
+  theme_minimal(base_size = base) +
+    theme(
+      plot.title    = element_text(face = "bold", colour = ink, size = rel(1.18)),
+      plot.subtitle = element_text(colour = ink2, margin = margin(b = 8)),
+      plot.caption  = element_text(colour = muted, size = rel(0.72), hjust = 0),
+      plot.title.position = "plot", plot.caption.position = "plot",
+      axis.text     = element_text(colour = ink2),
+      axis.title    = element_text(colour = ink2, size = rel(0.85)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = grid_col, linewidth = 0.3),
+      strip.text    = element_text(face = "bold", colour = ink, hjust = 0),
+      legend.position = "top", legend.justification = "left",
+      legend.title  = element_blank(), legend.text = element_text(colour = ink2)
+    )
+}
+theme_set(theme_story())
+
+src <- "Source: BLS CPI-U (CPIAUCSL) & unemployment rate (UNRATE); Federal Reserve Board effective fed funds rate (FEDFUNDS);\nCBO natural rate of unemployment (NROU). All via FRED."
+
+# Quick numbers used in the text
+era_stats <- macro |>
+  mutate(era = case_when(
+    date < ymd("2008-01-01") ~ "1995–2007",
+    date < fait_start        ~ "2008–Aug 2020",
+    date < fait_end          ~ "FAIT\nSep 2020–Aug 2025",
+    TRUE                     ~ "Post-FAIT\nSep 2025–"
+  ) |> fct_inorder()) |>
+  group_by(era) |>
+  summarise(
+    regime   = first(regime),
+    infl     = mean(infl),
+    miss_i   = mean(abs(i_gap)),
+    miss_u   = mean(abs(u_gap)),
+    in_zone  = mean(abs(i_gap) <= 1 & abs(u_gap) <= 1),
+    .groups = "drop"
+  )
+
+pl <- macro |>
+  filter(date >= ymd("2012-01-01")) |>
+  mutate(
+    yrs     = as.numeric(date - first(date)) / 365.25,
+    path2   = first(CPIAUCSL) * 1.02^yrs,
+    gap_pct = 100 * (CPIAUCSL / path2 - 1),
+    pce_gap = 100 * (PCEPILFE / (first(PCEPILFE) * 1.02^yrs) - 1)
+  )
+gap_at <- function(d) round(pl$gap_pct[pl$date == ymd(d)], 1)
+pce_at <- function(d) round(pl$pce_gap[pl$date == ymd(d)], 1)
+peak   <- macro |> slice_max(infl, n = 1)
+f1 <- function(x) format(round(x, 1), nsmall = 1)
+```
+
+## What I wanted to find out
+
+The Fed has two jobs: keep inflation around 2% and keep as many people working as it can. I wanted to see how it has balanced the two since 1995, and whether the old approach (aim for 2% every year, up to Aug 2020) or the newer one (Flexible Average Inflation Targeting, or FAIT, Sep 2020 – Aug 2025) worked better.
+
+**Data.** Monthly, Jan 1995 – `r format(last_obs, "%b %Y")`, all pulled from FRED. Inflation is the 12-month % change in CPI-U, unemployment is the seasonally adjusted rate, and the policy rate is the effective fed funds rate. For "maximum employment" I used the CBO's natural rate of unemployment. One gap to know about: BLS never published Oct 2025 CPI or unemployment because of the government shutdown, so I filled that month in by interpolation.
+
+## 1 · The big picture
+
+```{r}
+#| label: fig-overview
+#| fig-height: 6.4
+shade <- list(
+  annotate("rect", xmin = recessions$start, xmax = recessions$end, ymin = -Inf, ymax = Inf,
+           fill = "#d9d8d3", alpha = 0.6),
+  annotate("rect", xmin = fait_start, xmax = fait_end, ymin = -Inf, ymax = Inf,
+           fill = regime_cols["FAIT"], alpha = 0.10),
+  scale_x_date(date_breaks = "5 years", date_labels = "%Y", expand = expansion(mult = 0.01)),
+  labs(x = NULL)
+)
+
+p_infl <- ggplot(macro, aes(date, infl)) + shade +
+  geom_hline(yintercept = 2, linetype = "22", colour = ink2, linewidth = 0.4) +
+  geom_line(colour = line_col, linewidth = 0.6) +
+  annotate("text", x = ymd("1995-06-01"), y = 0.9, label = "2% target", hjust = 0,
+           size = 3, colour = ink2) +
+  annotate("text", x = fait_start + 900, y = 9.9, label = "FAIT", fontface = "bold",
+           size = 3.2, colour = ink) +
+  annotate("text", x = ymd("2009-06-01") + 60, y = 9.9, label = "recession", hjust = 0,
+           size = 2.9, colour = ink2) +
+  labs(y = "Inflation\n(CPI-U, % y/y)") +
+  theme(axis.text.x = element_blank())
+
+p_u <- ggplot(macro, aes(date)) + shade +
+  geom_line(aes(y = NROU), linetype = "22", colour = ink2, linewidth = 0.4) +
+  geom_line(aes(y = UNRATE), colour = line_col, linewidth = 0.6) +
+  annotate("text", x = ymd("1995-06-01"), y = 6.3, label = "natural rate (CBO)", hjust = 0,
+           size = 3, colour = ink2) +
+  labs(y = "Unemployment\n(%, SA)") +
+  theme(axis.text.x = element_blank())
+
+p_ff <- ggplot(macro, aes(date, FEDFUNDS)) + shade +
+  geom_line(colour = line_col, linewidth = 0.6) +
+  labs(y = "Fed funds\nrate (%)")
+
+(p_infl / p_u / p_ff) +
+  plot_annotation(
+    title = "Every big rate cut followed a recession; the one big hiking cycle followed inflation",
+    subtitle = "Grey bands: NBER recessions. Shaded band: FAIT regime (Sep 2020 – Aug 2025).",
+    caption = src
+  )
+```
+
+- **The Fed responds to both sides of the mandate.** It cut hard in 2001, 2008 and 2020 when unemployment jumped, and raised rates in the late 1990s, 2004–06, 2016–18 and 2022–23 when the job market was tight or prices were climbing.
+- **The 2010s are the odd stretch.** From 2017 to 2019 unemployment dropped well *below* the natural rate, but inflation barely moved off 2%. That flat Phillips curve is what pushed the Fed toward FAIT.
+- **The only real inflation spike in 30 years lands inside the FAIT window.** CPI inflation topped out at **`r f1(peak$infl)`%** in `r format(peak$date, "%B %Y")`.
+
+{{< pagebreak >}}
+
+## 2 · Who moved first?
+
+```{r}
+#| label: fig-sequence
+#| fig-height: 5.6
+z <- macro |> filter(date >= ymd("2020-06-01"))
+
+ev <- tibble(
+  date  = ymd(c("2021-03-01", "2022-03-01", "2022-06-01", "2023-08-01")),
+  label = c("Inflation passes 2%", "First hike", "Inflation peaks", "Last hike")
+)
+vlines <- geom_vline(xintercept = ev$date, colour = muted, linewidth = 0.3, linetype = "22")
+zshade <- list(
+  annotate("rect", xmin = fait_start, xmax = fait_end, ymin = -Inf, ymax = Inf,
+           fill = regime_cols["FAIT"], alpha = 0.08),
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", expand = expansion(mult = 0.01)),
+  labs(x = NULL)
+)
+
+s1 <- ggplot(z, aes(date, infl)) + zshade + vlines +
+  geom_hline(yintercept = 2, linetype = "22", colour = ink2, linewidth = 0.4) +
+  geom_line(colour = line_col, linewidth = 0.7) +
+  annotate("label", x = ev$date + c(0, -8, 8, 0), y = 10.6, label = ev$label, size = 2.6, colour = ink,
+           fill = "white", label.size = 0, hjust = c(0.5, 1, 0, 0.5)) +
+  annotate("text", x = ymd("2025-06-01"), y = 6.2, label = "FAIT regime", hjust = 1,
+           size = 2.9, colour = ink2, fontface = "bold") +
+  annotate("text", x = ymd("2025-10-01"), y = 6.2, label = "post-FAIT", hjust = 0,
+           size = 2.9, colour = ink2, fontface = "bold") +
+  scale_y_continuous(limits = c(0, 11.2), breaks = seq(0, 10, 2)) +
+  labs(y = "Inflation (% y/y)") + theme(axis.text.x = element_blank())
+
+s2 <- ggplot(z, aes(date, FEDFUNDS)) + zshade + vlines +
+  geom_line(colour = line_col, linewidth = 0.7) +
+  labs(y = "Fed funds (%)") + theme(axis.text.x = element_blank())
+
+s3 <- ggplot(z |> filter(date >= ymd("2021-01-01")), aes(date, UNRATE)) + zshade + vlines +
+  geom_line(aes(y = NROU), linetype = "22", colour = ink2, linewidth = 0.4) +
+  geom_line(colour = line_col, linewidth = 0.7) +
+  labs(y = "Unemployment (%)")
+
+(s1 / s2 / s3) + plot_layout(heights = c(1.2, 1, 1)) +
+  plot_annotation(
+    title = "The Fed waited a year after inflation passed 2% before its first hike",
+    subtitle = "2020–2026. Dashed vertical lines mark the events labelled at top; dashed line in bottom panel = CBO natural rate.",
+    caption = src
+  )
+```
+
+- **Prices moved first.** Inflation crossed 2% in March 2021, and the first hike didn't come until **12 months later** (March 2022), by which point inflation was over 8%. That wait was on purpose under FAIT: after years of running below 2%, the Fed wanted some overshoot.
+- **Jobs moved last.** Unemployment bottomed at 3.4% in April 2023, more than a year after the first hike, and has only crept up since. That fits the lag in the assignment notes: higher rates squeeze company costs first, and layoffs show up later.
+- **It ended in a soft landing.** Inflation came down from about 9% to about 3% without a recession, and unemployment stayed close to the natural rate.
+- **A word on cause and effect.** The Fed hikes *because* inflation is high, and the hikes then pull inflation down, so the arrow points both ways. The chart shows the order things happened in. It can't tell us how much of the cooldown came from rate hikes versus supply chains untangling.
+
+{{< pagebreak >}}
+
+## 3 · Why the Fed switched strategies
+
+```{r}
+#| label: fig-phillips
+#| fig-height: 4.4
+ph <- macro |>
+  mutate(panel = case_when(
+    date < ymd("2008-01-01") ~ "1995–2007",
+    date < fait_start        ~ "2008 – Aug 2020",
+    TRUE                     ~ "Sep 2020 – 2026"
+  ) |> fct_inorder()) |>
+  filter(UNRATE <= 10.5)   # drops the Apr–Jul 2020 lockdown spike (U of 10.2–14.8%)
+
+slopes <- ph |> group_by(panel) |>
+  summarise(b = coef(lm(infl ~ UNRATE))[2], .groups = "drop") |>
+  mutate(lab = paste0("slope: ", sprintf("%+.2f", b), " pp inflation\nper +1 pp unemployment"))
+
+ggplot(ph, aes(UNRATE, infl)) +
+  geom_hline(yintercept = 2, linetype = "22", colour = ink2, linewidth = 0.4) +
+  geom_point(aes(colour = regime), size = 1.4, alpha = 0.55, stroke = 0) +
+  geom_smooth(method = "lm", se = FALSE, colour = ink, linewidth = 0.6, formula = y ~ x) +
+  geom_text(data = slopes, aes(x = 10.4, y = 9.6, label = lab), hjust = 1, vjust = 1,
+            size = 2.7, colour = ink2, lineheight = 0.9) +
+  facet_wrap(~panel, nrow = 1) +
+  scale_colour_manual(values = regime_cols) +
+  guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+  scale_x_continuous(limits = c(3, 10.5), breaks = seq(4, 10, 2)) +
+  labs(x = "Unemployment rate (%)", y = "Inflation (CPI-U, % y/y)",
+       title = "In the 2010s, low unemployment stopped predicting high inflation",
+       subtitle = "Each dot is one month. The line is a simple linear fit within each period.",
+       caption = paste(src, "Apr–Jul 2020 (U > 10%) omitted."))
+```
+
+- **1995–2007:** roughly the textbook picture. A tighter job market went with somewhat higher inflation.
+- **2008–2020:** almost no relationship. Unemployment ran anywhere from 10% down to 3.5% while inflation sat around 1–2%. The 2015–18 hikes were insurance against an inflation surge that never came.
+- **After 2020 the curve came back, and steeply.** Reopening, supply shocks and stimulus sent inflation well past target while unemployment was still falling. FAIT was designed for the 2010s, and the post-pandemic economy didn't play along.
+- **One caveat.** A flat curve might partly be the Fed's own doing. If the Fed leans against inflation every time unemployment drops, the two can look unrelated in the data even when the trade-off is still there.
+
+{{< pagebreak >}}
+
+## 4 · How close to the bullseye?
+
+```{r}
+#| label: fig-bullseye
+#| fig-height: 6.9
+#| fig-width: 6.6
+yr <- macro |>
+  mutate(year = year(date)) |>
+  group_by(year) |>
+  summarise(i_gap = mean(i_gap), u_gap = mean(u_gap), n = n(), .groups = "drop") |>
+  mutate(regime = case_when(year <= 2020 ~ "Pre-FAIT", year <= 2025 ~ "FAIT", TRUE ~ "Post-FAIT") |>
+           factor(levels = levels(macro$regime)),
+         lab = if_else(year == max(year), paste0(year, "\n(Jan–", month(last_obs, label = TRUE), ")"),
+                       as.character(year)))
+
+rings <- expand_grid(r = 1:4, t = seq(0, 2 * pi, length.out = 200)) |>
+  mutate(x = r * cos(t), y = r * sin(t))
+keep_lab <- c(1995, 2000, 2009, 2010, 2012, 2015, 2019, 2021, 2022, 2023, 2024, 2025, 2026)
+
+ggplot(yr, aes(u_gap, i_gap)) +
+  geom_path(data = rings, aes(x, y, group = r), colour = grid_col, linewidth = 0.5) +
+  geom_hline(yintercept = 0, colour = muted, linewidth = 0.3) +
+  geom_vline(xintercept = 0, colour = muted, linewidth = 0.3) +
+  geom_path(colour = muted, linewidth = 0.35) +
+  geom_point(aes(fill = regime), shape = 21, size = 3, colour = "white", stroke = 0.6) +
+  geom_text_repel(data = filter(yr, year %in% keep_lab), aes(label = lab),
+                  size = 2.7, colour = ink2, lineheight = 0.85, seed = 7, box.padding = 0.4, max.overlaps = Inf,
+                  min.segment.length = 0.2, segment.colour = muted, segment.size = 0.25) +
+  annotate("text", x = 0.05, y = 0.12, label = "target", size = 2.6, colour = ink2, hjust = 0) +
+  annotate("text", x = -1.9, y = 6.2, label = "Too hot:\nprices", hjust = 0, size = 2.8, colour = ink2) +
+  annotate("text", x = 2.2, y = -2.3, label = "Too cold:\njobs", hjust = 0.5, size = 2.8, colour = ink2) +
+  scale_fill_manual(values = regime_cols) +
+  coord_equal(xlim = c(-2, 4.8), ylim = c(-2.6, 6.4)) +
+  theme(legend.position = "top") +
+  labs(x = "Unemployment gap: unemployment − CBO natural rate (pp)",
+       y = "Inflation gap: CPI inflation − 2% (pp)",
+       title = "Pre-FAIT misses were on jobs; FAIT's big miss was on prices",
+       subtitle = "Annual averages. Rings mark 1–4 points of distance from the dual-mandate target.\nModelled on the Chicago Fed's dual-mandate 'bullseye'.",
+       caption = str_replace(src, "; Federal", ";\nFederal"))
+```
+
+- **Before FAIT, the misses were mostly on jobs.** In 2009–2013 the path swings out to the right, with unemployment 2.5–4.5 points above the natural rate, while inflation stayed within about 2 points of target.
+- **FAIT flipped the problem.** 2021–2023 shoots straight *up*. Jobs bounced back to the natural rate quickly, but inflation ran 2–6 points too hot, the biggest miss on prices in the whole sample.
+- **Since 2024 the path is back inside the 1–2 point rings.** Unemployment is near its natural rate, and inflation is still running about a point above target.
+
+{{< pagebreak >}}
+
+## 5 · Did the averaging actually average out?
+
+```{r}
+#| label: fig-pricelevel
+#| fig-height: 4.3
+ann <- tibble(
+  date = c(ymd("2020-08-01"), ymd("2025-08-01")),
+  y    = c(gap_at("2020-08-01"), gap_at("2025-08-01")),
+  tx   = c(ymd("2017-06-01"), ymd("2021-03-01")),
+  ty   = c(-6.3, 8.6),
+  lab  = c(paste0("FAIT adopted:\nprices ", abs(gap_at("2020-08-01")), "% below the 2% path"),
+           paste0("FAIT retired:\nprices +", gap_at("2025-08-01"), "% above it"))
+)
+
+ggplot(pl, aes(date, gap_pct)) +
+  annotate("rect", xmin = fait_start, xmax = fait_end, ymin = -Inf, ymax = Inf,
+           fill = regime_cols["FAIT"], alpha = 0.10) +
+  geom_hline(yintercept = 0, colour = ink2, linewidth = 0.4) +
+  geom_area(fill = line_col, alpha = 0.08) +
+  geom_line(colour = line_col, linewidth = 0.7) +
+  geom_point(data = ann, aes(date, y), colour = ink, size = 2) +
+  geom_segment(data = ann, aes(x = tx + 60, y = ty, xend = date, yend = y), colour = muted, linewidth = 0.3) +
+  geom_label(data = ann, aes(tx, ty, label = lab), hjust = c(0, 1), size = 2.8, colour = ink,
+             lineheight = 0.9, fill = "white", label.size = 0) +
+  annotate("text", x = ymd("2023-03-01"), y = -6.8, label = "FAIT regime", size = 2.9,
+           colour = ink2, fontface = "bold") +
+  annotate("text", x = ymd("2012-04-01"), y = 0.6, hjust = 0, size = 2.8, colour = ink2,
+           label = "On a steady 2% path (Jan 2012 = start)") +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  scale_y_continuous(labels = label_number(suffix = "%", style_positive = "plus"), limits = c(-7.5, 11)) +
+  labs(x = NULL, y = "CPI-U vs. a 2%-a-year path",
+       title = "FAIT set out to close a 4% shortfall and ended with an 8% overshoot",
+       subtitle = "Gap between the actual consumer price level and where it would be if prices had risen exactly 2% a year\nsince the Fed formally adopted its 2% goal (Jan 2012).",
+       caption = src)
+```
+
+- The idea behind FAIT was about the **price level**: years below 2% get balanced out by years above it, so inflation *averages* 2% over time.
+- There really was a hole to fill. When FAIT started, prices were **`r abs(gap_at("2020-08-01"))`%** below a steady 2% path (core PCE, the Fed's preferred measure: `r pce_at("2020-08-01")`%).
+- The catch-up overshot badly. By the time FAIT was retired, prices were **+`r gap_at("2025-08-01")`%** *above* the path (core PCE: +`r pce_at("2025-08-01")`%). A true averaging rule would now call for a stretch of *below*-2% inflation, and the 2025 framework doesn't aim for that, so in practice the average never balanced out.
+
+{{< pagebreak >}}
+
+## 6 · Scorecard
+
+```{r}
+#| label: fig-scorecard
+#| fig-height: 4.2
+sc <- era_stats |>
+  select(era, regime, `Avg miss on inflation\n(pp from 2%)` = miss_i,
+         `Avg miss on employment\n(pp from natural rate)` = miss_u,
+         `Months inside the\n1-pt bullseye (%)` = in_zone) |>
+  pivot_longer(-c(era, regime)) |>
+  mutate(value = if_else(str_detect(name, "Months"), 100 * value, value),
+         name = fct_inorder(name),
+         lab  = if_else(str_detect(name, "Months"), paste0(round(value), "%"), sprintf("%.1f", value)))
+
+ggplot(sc, aes(value, fct_rev(era))) +
+  geom_col(fill = "#8a8984", width = 0.62) +
+  geom_text(aes(label = lab), hjust = -0.15, size = 2.9, colour = ink) +
+  facet_wrap(~name, scales = "free_x") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.28))) +
+  labs(x = NULL, y = NULL,
+       title = "FAIT won on jobs, lost badly on prices",
+       subtitle = "Monthly averages within each period (lower is better for the first two panels).",
+       caption = paste(src, "Post-FAIT covers only 12 months.")) +
+  theme(panel.grid.major.y = element_blank(), axis.text.x = element_blank(),
+        panel.grid.major.x = element_blank(), legend.position = "none")
+```
+
+```{r}
+es <- era_stats
+g <- function(i, col) f1(es[[col]][i])
+```
+
+## Where I landed
+
+- **The old approach (1995–2020) kept inflation in check.** It averaged about 2–2.6%. Where it fell short was jobs after 2008: unemployment stayed well above its natural rate for years, and inflation still came in low. That stubborn undershoot is what made the case for FAIT.
+- **FAIT (2020–2025) gets a split grade.** On jobs it delivered: the pandemic recovery was faster than after any recent recession, and the 2022–23 hikes brought a soft landing rather than a downturn. On prices it missed badly. Inflation averaged about `r g(3,"infl")`%, the biggest overshoot in the data. The averaging logic also pushed the first hike back about a year and turned a 4% shortfall into an 8% overshoot.
+- **What went wrong:** FAIT was built for a flat Phillips curve and inflation that was too low. It arrived right as the pandemic turned both of those on their head. And because it only worked one way (make up for undershoots, never for overshoots), it had no answer when inflation ran hot.
+- **Post-FAIT (since Sep 2025)** is too new to grade. A year in, unemployment is basically at its natural rate and inflation is about a point above target, with the Fed back to aiming for 2% at every point in time.
+
+**Caveats.** I used CPI-U because the assignment asks for it, but the Fed officially targets PCE, which usually runs a bit lower. The FAIT years also overlap the pandemic, so these charts show what happened under each approach, not what the framework caused on its own.
+
+**Sources.** BLS (CPI-U, CPIAUCSL, and the unemployment rate, UNRATE); Board of Governors (effective fed funds rate, FEDFUNDS); CBO (NROU). All retrieved from FRED, St. Louis Fed, on 27 Sep 2026. The CSVs used here are stored at <https://github.com/tagensingh/Data608_FA2026_Story_2>. Framework context: St. Louis Fed, *The Fed and the Dual Mandate*; Chicago Fed, *Dual Mandate* bullseye; M. Yglesias, *FAIT Accompli* (Slow Boring, 2020); NPR, *Soft Landing* (2022).
