@@ -236,7 +236,7 @@ s3 <- ggplot(z |> filter(date >= ymd("2021-01-01")), aes(date, UNRATE)) + zshade
 
 {{< pagebreak >}}
 
-## 3 · Why the Fed switched strategies
+## 3 · Swtiching strategies  - Why ?
 
 ```{r}
 #| label: fig-phillips
@@ -276,7 +276,7 @@ ggplot(ph, aes(UNRATE, infl)) +
 
 {{< pagebreak >}}
 
-## 4 · How close to the bullseye?
+## 4 · How close to the target ?
 
 ```{r}
 #| label: fig-bullseye
@@ -397,7 +397,7 @@ es <- era_stats
 g <- function(i, col) f1(es[[col]][i])
 ```
 
-## Where I landed
+## Where I landed - Conclusions
 
 - **The old approach (1995–2020) kept inflation in check.** It averaged about 2–2.6%. Where it fell short was jobs after 2008: unemployment stayed well above its natural rate for years, and inflation still came in low. That stubborn undershoot is what made the case for FAIT.
 - **FAIT (2020–2025) gets a split grade.** On jobs it delivered: the pandemic recovery was faster than after any recent recession, and the 2022–23 hikes brought a soft landing rather than a downturn. On prices it missed badly. Inflation averaged about `r g(3,"infl")`%, the biggest overshoot in the data. The averaging logic also pushed the first hike back about a year and turned a 4% shortfall into an 8% overshoot.
